@@ -5,7 +5,7 @@ import struct
 import sqlite3
 import errno
 
-COUNTS_PATH = 'PlayCounts'
+COUNTS_PATH = 'PlayCounts'		# it should be 'Play Counts'
 DB_PATH = 'Library.itdb'
 LOCAL_DB_PATH = 'db.sqlite3'
 
