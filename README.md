@@ -16,4 +16,6 @@ Record size per track is 40 bytes long. First 4 bytes (or maybe 2?) are the trac
 
 Records are stored according to 'physical_order' value in `Library.itdb/items` table starting with 0, ie song with physical_order 0 will have its playcount at address 0x00000090.
 
-~~`Play Counts` file is created after at least one song has been fully played from the beginning till the end without pauses (pauses are not confirmed). It is automatically removed after a successful synchronization with iTunes so scrobbling should be performed before launching iTunes.~~
+`Play Counts` file is created after at least one song has been fully played from the beginning till the end without pauses (pauses are not confirmed).
+The file is hidden while iTunes is running for reasons unknown.
+It is automatically cleaned after a successful synchronization with iTunes (manually pressing 'Sync', not autosync when you connect the device) so scrobbling should be performed before launching iTunes.

@@ -14,19 +14,24 @@ def check_path(path):
 def get_counts(path):
 	counts = []
 	file_size = os.path.getsize(path)
-	#first record starts from 96 byte
+	# first record starts from 96 byte
+	# 60 + 36 = 96
+	# never use tell(), it lies a lot
+	# http://stackoverflow.com/questions/19730875/python-file-tell-gives-wrong-value-location
+	pos = 60
 	with open(path,'r') as f:
-		f.seek(60)
+		f.seek(pos)
 		while True:
-			b = f.tell()
-			d = b+36
-			if d+4 > file_size:
+			pos = pos+36
+			if pos+4 > file_size:
 				break
 			else:
-				f.seek(d)
+				f.seek(pos)
 				a = f.read(4)
 				i = struct.unpack('<I',a)
-				# print f.tell(), repr(a)
+				pos = pos + 4
+				print pos, repr(a)
+				# time.sleep(2)
 				counts.extend(i)
 	return counts
 
