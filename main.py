@@ -38,7 +38,8 @@ class Song(object):
 		self.artist = _artist
 		self.album = _album
 		self.track = _title 			# track title is 'track' for lastfm
-		self.playcount = _playcount
+		self.playcount = _playcount 	# playcount should indicate how many times song should be scrobbled
+										# probably with a new timestamp
 		self.timestamp = _timestamp
 		self.sk = SESSION_KEY
 		self.generate_signature()
