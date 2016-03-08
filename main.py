@@ -6,16 +6,26 @@ import sqlite3
 import errno
 import md5
 import ConfigParser
+import requests
+from string import Template
+from xml.etree import ElementTree
 
-API_KEY = "105ecba38f955654e6f9c8dd807af8fc"
-SESSION_KEY = u""
-SECRET = "c1b0073b739fe9d88f3f83ffd8349a10"
+API_KEY = "f9793a7c8724e215987be37ba5691f62"
+SECRET = "3bb8f2f6f2de806b213cb73f53803815"
 ROOT_URL ="https://ws.audioscrobbler.com/2.0/"		#You must use HTTPS for this request
+
 
 COUNTS_PATH = 'PlayCounts'		# it should be 'Play Counts'
 DB_PATH = 'Library.itdb'
 LOCAL_DB_PATH = 'db.sqlite3'
 CONFIG_PATH = 'config.cfg'
+# The difference between the Unix timestamp epoch (1970) and the Mac timestamp epoch (1904)
+# should be used for proper timestamps if timestamps will be found in library somewhere
+#APPLE_TIME = 2082844800 		
+# since there are no proper timestamps, we will have to make some ourselves
+# first scrobble will start a week ago
+TSTAMP = int(time.time()) - 604800 + 604800
+SONG_TEMPLATE = """$title by $artist from $album; $playcount plays"""
 
 def get_credentials():
 	config = ConfigParser.RawConfigParser()
@@ -24,12 +34,33 @@ def get_credentials():
 	p = config.get('lastfm', 'password')
 	return {'username':u, 'password':p}
 
+def authenticate(username,password):
+	api_sig = md5.md5("api_key"+API_KEY
+		+"method"+"auth.getMobileSession"
+		+"password"+password
+		+"username"+username
+		+SECRET).hexdigest()
+	p = {"method":"auth.getMobileSession",
+		 "api_key":API_KEY,
+		 "username": username,
+		 "password":password,
+		 "api_sig":api_sig}
+	t = requests.post(ROOT_URL, params=p)
+	tree = ElementTree.fromstring(t.text)
+	key = tree.findall('session/key')
+	if key:
+		key = key[0].text
+	return key
+
+creds = get_credentials()
+SESSION_KEY = authenticate(creds['username'], creds['password'])
+
 # these fieldnames are ignored when generating signature for song
 IGNORED_FIELDNAMES = ['pid','playcount']
 
 class Song(object):
 	"""docstring for Song"""
-	def __init__(self, _pid, _artist, _album, _title, _playcount, _timestamp):
+	def __init__(self, _pid, _artist, _album, _title, _playcount, _timestamp=0):
 		super(Song, self).__init__()
 		self.api_sig = None
 		self.method = None
@@ -40,7 +71,7 @@ class Song(object):
 		self.track = _title 			# track title is 'track' for lastfm
 		self.playcount = _playcount 	# playcount should indicate how many times song should be scrobbled
 										# probably with a new timestamp
-		self.timestamp = _timestamp
+		self.timestamp = _timestamp 	# timestamps are handled by Bunch class
 		self.sk = SESSION_KEY
 		self.generate_signature()
 
@@ -77,13 +108,19 @@ class Song(object):
 		self.method = None
 		return response
 
+	def __str__(self):
+		text_template = Template(SONG_TEMPLATE)
+		text = text_template.substitute({"artist":self.artist, "title":self.track, 
+										 "album":self.album, "playcount":self.playcount})
+		return text
+
 
 class Bunch(object):
 	"""a bunch of songs, 50 max"""
 	def __init__(self, songs, start_timestamp):
 		self.__songs__ = songs
 		for s in self.__songs__:
-			s['timestamp'] = start_timestamp
+			s.timestamp = start_timestamp
 			start_timestamp+=1
 		self.__generate_signature__()
 
@@ -95,14 +132,14 @@ class Bunch(object):
 		p = {}
 		p['method'] = u'track.scrobble'
 		p['api_key'] = API_KEY
-		p['sk'] = u"b7b81208af657607db074021e3d3c947"
+		p['sk'] = SESSION_KEY
 		for s in self.__songs__:
 			i = str(self.__songs__.index(s))
-			p['artist[{}]'.format(i)] = s['artist']
-			p['track[{}]'.format(i)] = s['track']
-			p['timestamp[{}]'.format(i)] = str(s['timestamp'])
-			if s.has_key('album'):
-				p['album[{}]'.format(i)] = s['album']
+			p['artist[{}]'.format(i)] = s.artist
+			p['track[{}]'.format(i)] = s.track
+			p['timestamp[{}]'.format(i)] = str(s.timestamp)
+			if s.album:
+				p['album[{}]'.format(i)] = s.album
 		for key, value in sorted(p.items()):
 			query_string = query_string + key + value
 		query_string = query_string + SECRET
@@ -138,24 +175,6 @@ class LocalDB(object):
 	def add_song(song):
 		pass
 
-def authenticate(username,password):
-	api_sig = md5.md5("api_key"+API_KEY
-		+"method"+"auth.getMobileSession"
-		+"password"+password
-		+"username"+username
-		+SECRET).hexdigest()
-	p = {"method":"auth.getMobileSession",
-		 "api_key":API_KEY,
-		 "username": username,
-		 "password":password,
-		 "api_sig":api_sig}
-	t = requests.post(ROOT_URL, data=p)
-	tree = ElementTree.fromstring(t.text)
-	key = tree.findall('session/key')
-	if key:
-		key = key[0].text
-	return key
-
 def check_path(path):
 	return os.path.isfile(path)
 
@@ -187,11 +206,13 @@ def get_selected_songs(_dbpath, _songs_ids):
 	conn = sqlite3.connect(_dbpath)
 	c = conn.cursor()
 	songs = []
-	for i in _songs_ids:
+	for n,i in enumerate(_songs_ids):
 		phys_order = i[0]
 		play_count = i[1]
-		c.execute('SELECT pid, artist, title, album FROM item WHERE physical_order == (?)', (str(phys_order),) )
-		songs.append((c.fetchone(), play_count))
+		c.execute('SELECT pid, artist, album, title FROM item WHERE physical_order == (?)', (str(phys_order),) )
+		r = c.fetchone()
+		s = Song(r[0], r[1], r[2], r[3], play_count)
+		songs.append(s)
 	conn.close()
 	return songs
 
@@ -213,17 +234,32 @@ def get_playcounts_diff():
 	pass
 
 def main():
-	creds = get_credentials()
-	# SESSION_KEY = authenticate(creds['username'], creds['password'])
 	if not (check_path(COUNTS_PATH) and check_path(DB_PATH) and check_path(CONFIG_PATH)):
 		raise OSError(os.strerror(errno.ENOENT))
 	counts = get_counts(COUNTS_PATH)
 	songs_ids = get_songs_ids(counts)
 	songs = get_selected_songs(DB_PATH,songs_ids)
 	count = 0
-	for s in songs:
-		print s
-		count = count + s[1]
+	page = 0
+	while page < (len(songs) + 1):
+		b = Bunch(songs[page*50:((page+1)*50)-1], TSTAMP)
+		resp = b.scrobble()
+		if resp.ok:
+			tree = ElementTree.fromstring((resp.text).encode('utf-8'))
+			status_element = tree.findall('scrobbles')[0]
+			status = status_element.attrib
+			print "{} tracks scrobbled".format(status['accepted'])
+			if len(b) != int(status['accepted']):
+				print 'ERROR, page {}, sent {}, accepted {}'.format(page, len(b), status['accepted'])
+				raw_input()
+				print resp.text
+				raw_input()
+			else:
+				#print '50 tracks uploaded'
+				b.mark_as_uploaded()
+				time.sleep(1)
+			page = page+1
+
 	print len(songs),'songs', count, 'plays'
 	return 0
 
