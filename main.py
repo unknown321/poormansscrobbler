@@ -211,8 +211,13 @@ def get_selected_songs(_dbpath, _songs_ids):
 		play_count = i[1]
 		c.execute('SELECT pid, artist, album, title FROM item WHERE physical_order == (?)', (str(phys_order),) )
 		r = c.fetchone()
-		s = Song(r[0], r[1], r[2], r[3], play_count)
-		songs.append(s)
+		if play_count > 1:
+			for i in range (1,play_count+1):
+				s = Song(r[0], r[1], r[2], r[3], i)
+				songs.append(s)
+		else:
+			s = Song(r[0], r[1], r[2], r[3], i)
+			songs.append(s)
 	conn.close()
 	return songs
 
@@ -241,6 +246,7 @@ def main():
 	songs = get_selected_songs(DB_PATH,songs_ids)
 	count = 0
 	page = 0
+
 	while page < (len(songs) + 1):
 		b = Bunch(songs[page*50:((page+1)*50)-1], TSTAMP)
 		resp = b.scrobble()
@@ -256,7 +262,6 @@ def main():
 				raw_input()
 			else:
 				#print '50 tracks uploaded'
-				b.mark_as_uploaded()
 				time.sleep(1)
 			page = page+1
 
