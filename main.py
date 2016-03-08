@@ -247,7 +247,7 @@ def main():
 	count = 0
 	page = 0
 
-	while page < (len(songs) + 1):
+	while page < (len(songs)/50 + 1):
 		b = Bunch(songs[page*50:((page+1)*50)-1], TSTAMP)
 		resp = b.scrobble()
 		if resp.ok:
