@@ -14,9 +14,8 @@ API_KEY = "f9793a7c8724e215987be37ba5691f62"
 SECRET = "3bb8f2f6f2de806b213cb73f53803815"
 ROOT_URL ="https://ws.audioscrobbler.com/2.0/"		#You must use HTTPS for this request
 
-
 COUNTS_PATH = 'PlayCounts'		# it should be 'Play Counts'
-DB_PATH = 'Library2'
+DB_PATH = 'Library.itdb'
 LOCAL_DB_PATH = 'db.sqlite3'
 CONFIG_PATH = 'config.cfg'
 # The difference between the Unix timestamp epoch (1970) and the Mac timestamp epoch (1904)
@@ -26,10 +25,12 @@ CONFIG_PATH = 'config.cfg'
 # first scrobble will start a week ago
 TSTAMP = int(time.time()) - 604800 + 604800
 SONG_TEMPLATE = """$title by $artist from $album; $playcount plays"""
+# these fieldnames are ignored when generating signature for a song
+IGNORED_FIELDNAMES = ['pid','playcount']
 
-def get_credentials():
+def get_credentials(_c_path=CONFIG_PATH):
 	config = ConfigParser.RawConfigParser()
-	config.read(CONFIG_PATH)
+	config.read(_c_path)
 	u = config.get('lastfm', 'username')
 	p = config.get('lastfm', 'password')
 	return {'username':u, 'password':p}
@@ -55,14 +56,6 @@ def authenticate(username,password):
 class LonelyException(Exception):
 	'''Raise when credentials are empty'''
  	pass
-
-creds = get_credentials()
-SESSION_KEY = authenticate(creds['username'], creds['password'])
-# if not SESSION_KEY:
-# 	raise LonelyException("Empty SESSION_KEY, check your credentials")
-
-# these fieldnames are ignored when generating signature for song
-IGNORED_FIELDNAMES = ['pid','playcount']
 
 class Song(object):
 	"""docstring for Song"""
@@ -273,150 +266,182 @@ def get_selected_songs(_dbpath, _songs_ids):
 	conn.close()
 	return songs
 
-def scrobble_everything(_songs):
-	# scrobbles 50 tracks per page
-	page = 0
-	while page < (len(_songs)/50 + 1):
-		b = Bunch(_songs[page*50:((page+1)*50)-1], TSTAMP)
-		resp = b.scrobble()
-		if resp.ok:
-			tree = ElementTree.fromstring((resp.text).encode('utf-8'))
-			status_element = tree.findall('scrobbles')[0]
-			status = status_element.attrib
-			print "{} tracks scrobbled".format(status['accepted'])
-			if len(b) != int(status['accepted']):
-				print 'ERROR, page {}, sent {}, accepted {}'.format(page, len(b), status['accepted'])
-				return resp.text
-			else:
-				#print '50 tracks uploaded'
-				time.sleep(1)
-			page = page+1
-	return 0
-
-def get_playcounts_diff():
-
-
-
-
-	# creates diff between two playcount files AND LIBRARIES
-	# returns changed/added songs with amount of scrobbles
+def get_songs_with_scrobbles():
+	# gets songs info from iPod db if its playcount > 1
 	songs_to_scrobble = []
 	conn_new = sqlite3.connect(DB_PATH)
-	conn_local = sqlite3.connect(LOCAL_DB_PATH)
-
 	c_new = conn_new.cursor()
 	c_new.execute('SELECT pid FROM item ORDER BY physical_order')
 	new_library_songs = c_new.fetchall()
-	
 	counts = get_counts(COUNTS_PATH)
 	counts[1] = 1
 	songs_from_new_lib_with_playcounts = []
 	for n,song in enumerate(new_library_songs):
-		song = song + (counts[n],)
-		songs_from_new_lib_with_playcounts.append(song)
-	
+		if counts[n] > 0:
+			song = song + (counts[n],)
+			songs_from_new_lib_with_playcounts.append(song)
+	conn_new.close()
+	return songs_from_new_lib_with_playcounts
+
+def process_new_songs(_added_songs):
+	# add new songs __with_playcounts__ to local library, create Song objects from them
+	conn_new = sqlite3.connect(DB_PATH)
+	c_new = conn_new.cursor()
+	conn_local = sqlite3.connect(LOCAL_DB_PATH)
 	c_local = conn_local.cursor()
-	c_local.execute('delete from new_item')
-	conn_local.commit()
-	c_local.executemany('insert into new_item values (?,?)', songs_from_new_lib_with_playcounts)
-	# # find songs that don't exist on iPod anymore
-	# c_local.execute('select pid from item except select pid from new_item')
-	# removed_pids = c_local.fetchone()
-	# find new songs that were added to iPod judging only by pids
-	c_local.execute('select pid from new_item except select pid from item')
-	a_pids = c_local.fetchall()
-	added_pids = []
-	for i in a_pids:
-		print i
-		c_local.execute('select pid, playcount from new_item where pid == (?)',(i[0],))
-		added_pids = c_local.fetchall()
-	if not added_pids:
-		# no changes
-		pass
-	else:
-		# songs were added, we must add them to local library and scrobble
-		c_new = conn_new.cursor()
-		# SQLite can't (by default) handle more than 999 parameters to a query
-		# there is no nice way to handle this
-		for p in added_pids:
-			c_new.execute('SELECT pid, artist, album, title FROM item where pid = ?',(p[0],))
-			new_song = c_new.fetchone()
-			new_song = new_song + (p[1],)
-			c_local.execute('insert into item values (?,?,?,?,?)', new_song )
-			conn_local.commit()
-			if new_song[4] > 1:
-				# playcount > 1
-				for i in range (1, new_song[4]+1):
-					s = Song(new_song[0], new_song[1], new_song[2], new_song[3], i)
-					songs_to_scrobble.append(s)
-			elif new_song[4] > 0:
-				s = Song(new_song[0], new_song[1], new_song[2], new_song[3], i)
-				songs_to_scrobble.append(s)
-			else:
-				pass
-
-	c_local.execute('select pid, playcount from new_item except select pid, playcount from item')
-	changed_pids = c_local.fetchall()
-	# remove added songs from list of changed ones
-	for s in added_pids:
-		for i in changed_pids:
-			if s[0] == i[0]:
-				changed_pids.remove(i)
-				break
-	if changed_pids:
-		# songs were changed, we must scrobble them
-		c_local = conn_local.cursor()
-		# SQLite can't (by default) handle more than 999 parameters to a query
-		# there is no nice way to handle this
-		# playcount = 0
-		for p in changed_pids:
-		# 	for i in a_pids:
-		# 		if i[0] == p[0]:
-		# 			playcount = i[1]
-		# 			break
-			c_local.execute('update item set playcount = (?) where pid = (?)',(p[1], p[0]))
-			conn_local.commit()
-			c_new.execute('SELECT pid, artist, album, title FROM item WHERE pid == (?)', (p[0], ) )
-			r = c_new.fetchone()
-			if p[1] > 1:
-				# playcount > 1
-				for i in range (1, p[1]):
-					s = Song(r[0], r[1], r[2], r[3], i)
-					songs_to_scrobble.append(s)
-			else:
-				s = Song(r[0], r[1], r[2], r[3], 1)
-				songs_to_scrobble.append(s)
-
+	songs_to_scrobble = []
+	# SQLite can't (by default) handle more than 999 parameters to a query
+	# there is no nice way to handle this
+	for p in _added_songs:
+		# get all song info from ipod database, add playcounts, save into localdb
+		c_new.execute('SELECT pid, artist, album, title FROM item where pid = ?',(p[0],))
+		new_song = c_new.fetchone()
+		new_song = new_song + (p[1],)
+		c_local.execute('insert into item values (?,?,?,?,?)', new_song )
+		conn_local.commit()
+		# duplicate songs as many times as it was played
+		for i in range (1, new_song[4]+1):
+			s = Song(new_song[0], new_song[1], new_song[2], new_song[3], i)
+			songs_to_scrobble.append(s)
 	conn_new.close()
 	conn_local.close()
 	return songs_to_scrobble
 
-def bl():
-	# asks important question
-	answer = raw_input('First time scrobbling after iTunes synch? [Yes/No]')
-	if answer in ['y','Y','Yes', 'YES', 'ye']:
-		# this is the first time, all playcounts will be scrobbled
-		counts = get_counts(COUNTS_PATH)
-		songs_ids = get_songs_ids(counts)
-	elif answer in ['n','N','No','NO']:
-		# there was a scrobble before, only new playcounts will be scrobbled
-		# new_playcounts-old_playcounts
-		get_playcounts_diff()
+def find_and_save_chaged_songs():
+	# save changed/added songs into temp table to find differences using sql
+	songs_from_new_lib_with_playcounts = get_songs_with_scrobbles()
+	conn_local = sqlite3.connect(LOCAL_DB_PATH)
+	c_local = conn_local.cursor()
+	c_local.execute('delete from new_item')
+	conn_local.commit()
+	c_local.executemany('insert into new_item values (?,?)', songs_from_new_lib_with_playcounts)
+	conn_local.commit()
+	conn_local.close()
+
+
+def diff_new_songs():
+	# find new songs that were added to iPod judging only by pids
+	# we cannot get pid-playcount pairs immidiately because:
+	## SELECTs to the left and right of EXCEPT do not have the same number of result columns
+	songs_to_scrobble = []
+	added_songs = []
+	conn_local = sqlite3.connect(LOCAL_DB_PATH)
+	c_local = conn_local.cursor()
+	c_local.execute('select pid from new_item except select pid from item')
+	a_pids = c_local.fetchall()
+	for i in a_pids:
+		c_local.execute('select pid, playcount from new_item where pid == (?)',(i[0],))
+		added_songs.append(c_local.fetchall()[0])
+	if added_songs:
+		songs_to_scrobble.extend(process_new_songs(added_songs))
+
+	conn_local.commit()
+	conn_local.close()
+	return songs_to_scrobble
+
+def diff_old_songs():
+	# find songs that exist in local database and were played on iPod, create Song objects from them
+	songs_to_scrobble = []
+	conn_local = sqlite3.connect(LOCAL_DB_PATH)
+	c_local = conn_local.cursor()
+	c_local.execute('select pid, playcount from new_item except select pid, playcount from item')
+	changed_pids = c_local.fetchall()
+	if changed_pids:
+		# update local db
+		# SQLite can't (by default) handle more than 999 parameters to a query
+		# there is no nice way to handle this
+		for p in changed_pids:
+			c_local.execute('SELECT pid, artist, album, title, playcount FROM item WHERE pid == (?)', (p[0], ) )
+			r = c_local.fetchone()
+			c_local.execute('update item set playcount = (?) where pid = (?)',(p[1], p[0]))
+			conn_local.commit()
+			for i in range (r[4], p[1]):
+				s = Song(r[0], r[1], r[2], r[3], p[1]-i)
+				songs_to_scrobble.append(s)
+
+	conn_local.commit()
+	conn_local.close()
+	return songs_to_scrobble
+
+def clean_temp_table():
+	conn_local = sqlite3.connect(LOCAL_DB_PATH)
+	c_local = conn_local.cursor()
+	c_local.execute('delete from new_item')
+	conn_local.commit()
+	conn_local.close()
+
+def get_playcounts_diff():
+	# returns changed/added songs with amount of scrobbles
+	songs_to_scrobble = []
+	find_and_save_chaged_songs()
+	songs_to_scrobble.extend(diff_new_songs())
+	songs_to_scrobble.extend(diff_old_songs())
+	clean_temp_table()
+	return songs_to_scrobble
+
+def purge_local_db():
+	conn_local = sqlite3.connect(LOCAL_DB_PATH)
+	c_local = conn_local.cursor()
+	c_local.execute('delete from item')
+	conn_local.commit()
+	conn_local.close()
+
+def does_it_really_matter():
+	# does local database still matter?
+	answer = raw_input('First time scrobbling after iTunes sync? [Yes/No]')
+	if answer in ['y','Y','Yes', 'YES', 'ye','yes']:
+		# this is the first time, all playcounts from local database doesn't matter
+		# since playcounts on iPod were set to 0 when it was synced
+		# purge local database
+		purge_local_db()
+		return 0
+	elif answer in ['n','N','No','NO','no']:
+		# do nothing
+		return 0
 	else:
 		print 'No answer :V'
-	pass
+		return 1
+
+
+def scrobble_everything(_songs):
+	# scrobbles 50 tracks per page
+	page = 0
+	for i in _songs:
+		print unicode(i)
+	if len(_songs) > 0:
+		while page < (len(_songs)/50 + 1):
+			b = Bunch(_songs[page*50:((page+1)*50)-1], TSTAMP)
+			resp = b.scrobble()
+			if resp.ok:
+				tree = ElementTree.fromstring((resp.text).encode('utf-8'))
+				status_element = tree.findall('scrobbles')[0]
+				status = status_element.attrib
+				print "{} tracks scrobbled".format(status['accepted'])
+				if len(b) != int(status['accepted']):
+					print 'ERROR, page {}, sent {}, accepted {}'.format(page, len(b), status['accepted'])
+					return resp.text
+				else:
+					#print '50 tracks uploaded'
+					time.sleep(1)
+				page = page+1
+	else:
+		return 'Nothing to scrobble'
+	return 0
 
 def main():
 	if not (check_path(COUNTS_PATH) and check_path(DB_PATH)
 		and check_path(CONFIG_PATH)):
 		raise OSError(os.strerror(errno.ENOENT))
-	# counts = get_counts(COUNTS_PATH)
-	# songs_ids = get_songs_ids(counts)
-	songs = get_selected_songs(DB_PATH, songs_ids)
-	status = scrobble_everything(songs)
-	if status is not 0:
-		print status
-	print len(songs),'songs'
+	creds = get_credentials()
+	global SESSION_KEY
+	SESSION_KEY = authenticate(creds['username'], creds['password'])
+	if not SESSION_KEY:
+		raise LonelyException("Empty SESSION_KEY, check your credentials")
+
+	if not does_it_really_matter():
+		status = scrobble_everything(get_playcounts_diff())
+		if status is not 0:
+			print status
 	return 0
 
 if __name__ == '__main__':
