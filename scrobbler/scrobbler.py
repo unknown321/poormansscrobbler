@@ -23,7 +23,7 @@ CONFIG_PATH = 'config.cfg'
 #APPLE_TIME = 2082844800 		
 # since there are no proper timestamps, we will have to make some ourselves
 # first scrobble will start a week ago
-TSTAMP = int(time.time()) - 604800 + 604800
+TSTAMP = int(time.time()) - 604800
 SONG_TEMPLATE = """$title by $artist from $album; $playcount plays"""
 # these fieldnames are ignored when generating signature for a song
 IGNORED_FIELDNAMES = ['pid','playcount']
@@ -386,7 +386,7 @@ def purge_local_db():
 	conn_local.commit()
 	conn_local.close()
 
-def does_it_really_matter():
+def ask_about_syncronization():
 	# does local database still matter?
 	answer = raw_input('First time scrobbling after iTunes sync? [Yes/No]')
 	if answer in ['y','Y','Yes', 'YES', 'ye','yes']:
@@ -438,10 +438,17 @@ def main():
 	if not SESSION_KEY:
 		raise LonelyException("Empty SESSION_KEY, check your credentials")
 
-	if not does_it_really_matter():
-		status = scrobble_everything(get_playcounts_diff())
-		if status is not 0:
-			print status
+	if not ask_about_syncronization():
+		s = get_playcounts_diff()
+		answer = raw_input('Scrobble {} tracks? [Yes/No]'.format(str(len(s))))
+		if answer in ['y','Y','Yes', 'YES', 'ye','yes']:
+			status = scrobble_everything(s)
+			if status is not 0:
+				print status
+		else:
+			# songs were added to local database, but not uploaded
+			# this is not good at all, changes should be reverted, but I am lazy
+			pass
 	return 0
 
 if __name__ == '__main__':
